@@ -1,0 +1,15 @@
+name = "black-enthem-api"
+type = "javascript"
+account_id = "your_account_id"
+workers_dev = true
+
+# Uncomment and add KV namespace ID for production
+# kv_namespaces = [
+#   { binding = "API_USAGE", id = "your_kv_id" }
+# ]
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[build]
+command = "echo 'No build required'"

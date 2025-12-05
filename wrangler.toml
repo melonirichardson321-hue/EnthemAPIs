@@ -1,15 +1,12 @@
-name = "black-enthem-api"
-type = "javascript"
-account_id = "your_account_id"
-workers_dev = true
-
-# Uncomment and add KV namespace ID for production
-# kv_namespaces = [
-#   { binding = "API_USAGE", id = "your_kv_id" }
-# ]
-
-[env.production]
-vars = { ENVIRONMENT = "production" }
+name = "black-enthem-mobile"
+main = "index.js"
+compatibility_date = "2025-12-05"
 
 [build]
-command = "echo 'No build required'"
+command = ""
+
+[vars]
+BRAND = "BLACK 🖤 ENTHEM"
+OWNER = "@BlackEnthemOwner"
+TELEGRAM = "https://t.me/blackenthem_1"
+FREE_LIMIT = "100"

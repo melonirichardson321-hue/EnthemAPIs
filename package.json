@@ -1,0 +1,16 @@
+{
+  "name": "black-enthem-api",
+  "version": "1.0.0",
+  "description": "Premium API Service by @BlackEnthemOwner",
+  "main": "index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler publish"
+  },
+  "keywords": ["api", "premium", "mobile", "osint"],
+  "author": "@BlackEnthemOwner",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

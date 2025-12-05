@@ -1,4 +1,4 @@
-// index.js - Cloudflare Workers with Rate Limiting
+// index.js - Only 2 APIs with hidden credits
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
@@ -9,22 +9,17 @@ const CONFIG = {
   OWNER: "@BlackEnthemOwner",
   TELEGRAM: "https://t.me/blackenthem_1",
   FREE_LIMIT: 100,
-  SOURCE_APIS: {
-    mobile: {
-      url: "https://gauravapi.gauravyt492.workers.dev/?mobile=",
-      regex: /^[6-9]\d{9}$/,
-      error: "Invalid Indian Mobile Number"
+  
+  // Only 2 hidden source APIs
+  HIDDEN_APIS: {
+    "gaurav": {
+      url: "https://gauravapi.gauravyt492.workers.dev/?mobile={query}"
     },
-    email: {
-      url: "https://another-api.com/email?q=",
-      regex: /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
-      error: "Invalid Email Address"
+    "veeru": {
+      url: "https://veerulookup.onrender.com/search_phone?number={query}"
     }
   }
 }
-
-// KV Namespace for storing usage (setup in Cloudflare dashboard)
-// const USAGE_KV = API_USAGE
 
 // Premium error response
 function premiumError() {
@@ -44,35 +39,43 @@ function premiumError() {
   })
 }
 
-// Get client identifier
-function getClientId(request) {
-  const ip = request.headers.get('CF-Connecting-IP') || 'unknown'
-  const userAgent = request.headers.get('User-Agent') || ''
-  return btoa(ip + userAgent.substring(0, 20)).replace(/[^a-z0-9]/gi, '')
-}
+// Rate limiting
+let usageData = {}
 
-// Check rate limit (simplified - in production use KV)
-let usageCache = {}
-
-function checkRateLimit(clientId) {
+function checkRateLimit(ip) {
   const now = Date.now()
-  const dayInMs = 24 * 60 * 60 * 1000
+  const dayInMs = 86400000
   
-  if (!usageCache[clientId]) {
-    usageCache[clientId] = { count: 0, resetTime: now + dayInMs }
+  if (!usageData[ip]) {
+    usageData[ip] = { count: 0, resetTime: now + dayInMs }
   }
+  
+  const user = usageData[ip]
   
   // Reset after 24 hours
-  if (now > usageCache[clientId].resetTime) {
-    usageCache[clientId] = { count: 0, resetTime: now + dayInMs }
+  if (now > user.resetTime) {
+    user.count = 0
+    user.resetTime = now + dayInMs
   }
   
-  usageCache[clientId].count++
+  user.count++
   
-  return usageCache[clientId].count <= CONFIG.FREE_LIMIT
+  // Clean old data occasionally
+  if (Math.random() < 0.01) {
+    for (const key in usageData) {
+      if (now > usageData[key].resetTime + dayInMs) {
+        delete usageData[key]
+      }
+    }
+  }
+  
+  return {
+    allowed: user.count <= CONFIG.FREE_LIMIT,
+    remaining: Math.max(0, CONFIG.FREE_LIMIT - user.count)
+  }
 }
 
-// Clean and validate input
+// Clean mobile number
 function cleanNumber(number) {
   if (!number) return null
   let cleaned = number.toString().trim()
@@ -81,25 +84,115 @@ function cleanNumber(number) {
   return cleaned.replace(/\D/g, '')
 }
 
-// Fetch from source API
-async function fetchFromSource(url) {
+// Validate Indian mobile number
+function validateMobile(number) {
+  const cleaned = cleanNumber(number)
+  const regex = /^[6-9]\d{9}$/
+  return cleaned && regex.test(cleaned) ? cleaned : null
+}
+
+// Fetch from API with timeout
+async function fetchFromAPI(apiUrl, mobileNumber) {
   try {
+    const url = apiUrl.replace('{query}', mobileNumber)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 8000)
+    
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       },
+      signal: controller.signal,
       cf: { cacheTtl: 300 }
     })
     
+    clearTimeout(timeout)
+    
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`)
+      return null
     }
     
     return await response.json()
   } catch (error) {
-    console.error('Source API error:', error)
+    console.error('API fetch error:', error.message)
     return null
   }
+}
+
+// Remove credit field from response (hide anshapi)
+function removeCredits(data) {
+  if (typeof data !== 'object' || data === null) return data
+  
+  // Remove credit/credits/anshapi fields
+  const cleaned = { ...data }
+  
+  if (cleaned.credit) delete cleaned.credit
+  if (cleaned.credits) delete cleaned.credits
+  if (cleaned.source) delete cleaned.source
+  
+  // Recursively clean nested objects
+  for (const key in cleaned) {
+    if (typeof cleaned[key] === 'object') {
+      cleaned[key] = removeCredits(cleaned[key])
+    } else if (typeof cleaned[key] === 'string') {
+      // Remove any mention of anshapi from strings
+      cleaned[key] = cleaned[key].replace(/anshapi/gi, '').trim()
+    }
+  }
+  
+  return cleaned
+}
+
+// Extract data from API response
+function extractData(apiResponse, apiType) {
+  if (!apiResponse) return null
+  
+  // Remove credits first
+  const cleanedResponse = removeCredits(apiResponse)
+  
+  // Try different response formats
+  if (apiType === 'gaurav') {
+    // Gaurav API format
+    if (cleanedResponse.data && Array.isArray(cleanedResponse.data.result)) {
+      return cleanedResponse.data.result
+    }
+  } else if (apiType === 'veeru') {
+    // Veeru API format - remove credit field
+    if (Array.isArray(cleanedResponse)) {
+      return cleanedResponse
+    } else if (cleanedResponse.result && Array.isArray(cleanedResponse.result)) {
+      return cleanedResponse.result
+    } else if (cleanedResponse.data && Array.isArray(cleanedResponse.data)) {
+      return cleanedResponse.data
+    }
+  }
+  
+  return null
+}
+
+// Try multiple APIs
+async function tryAllAPIs(mobileNumber) {
+  const apis = Object.entries(CONFIG.HIDDEN_APIS)
+  
+  for (const [apiName, apiConfig] of apis) {
+    try {
+      const data = await fetchFromAPI(apiConfig.url, mobileNumber)
+      if (data) {
+        const extracted = extractData(data, apiName)
+        if (extracted && extracted.length > 0) {
+          return {
+            success: true,
+            data: extracted,
+            source: apiName
+          }
+        }
+      }
+    } catch (error) {
+      console.log(`API ${apiName} failed:`, error.message)
+    }
+  }
+  
+  return { success: false, error: "No data found from any source" }
 }
 
 // Success response
@@ -133,81 +226,61 @@ function errorResponse(message, status = 400) {
   })
 }
 
-// Main request handler
+// Home page
+function homeResponse() {
+  return new Response(JSON.stringify({
+    message: "Secure Mobile Lookup API",
+    brand: CONFIG.BRAND,
+    usage: "Add ?num=XXXXXXXXXX to URL",
+    example: "/?num=7070096514",
+    limit: `${CONFIG.FREE_LIMIT} free searches per day`,
+    contact: CONFIG.OWNER
+  }, null, 2), {
+    headers: { 'Content-Type': 'application/json' }
+  })
+}
+
+// Main handler
 async function handleRequest(request) {
   const url = new URL(request.url)
-  const path = url.pathname
-  
-  // Only allow GET
-  if (request.method !== 'GET') {
-    return errorResponse('Method not allowed', 405)
-  }
   
   // Home page
-  if (path === '/' && !url.search) {
-    return new Response(JSON.stringify({
-      message: "Secure API Services",
-      brand: CONFIG.BRAND,
-      note: "Add query parameters to use",
-      example: "/?num=XXXXXXXXXX"
-    }, null, 2), {
-      headers: { 'Content-Type': 'application/json' }
-    })
+  if (url.pathname === '/' && !url.searchParams.has('num') && !url.searchParams.has('mobile')) {
+    return homeResponse()
   }
   
-  // Check for mobile number
-  const mobileParam = url.searchParams.get('num') || 
-                      url.searchParams.get('mobile') || 
-                      url.searchParams.get('number')
+  // Get mobile number
+  const mobileParam = url.searchParams.get('num') || url.searchParams.get('mobile')
   
-  // Check rate limit
-  const clientId = getClientId(request)
-  if (!checkRateLimit(clientId)) {
+  if (!mobileParam) {
+    return errorResponse("Missing mobile number. Use ?num=XXXXXXXXXX")
+  }
+  
+  // Validate
+  const mobileNumber = validateMobile(mobileParam)
+  if (!mobileNumber) {
+    return errorResponse("Invalid Indian mobile number. Must be 10 digits starting with 6-9")
+  }
+  
+  // Rate limiting
+  const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown'
+  const rateLimit = checkRateLimit(clientIP)
+  
+  if (!rateLimit.allowed) {
     return premiumError()
   }
   
-  const remaining = CONFIG.FREE_LIMIT - usageCache[clientId].count
+  // Fetch data from APIs
+  const result = await tryAllAPIs(mobileNumber)
   
-  // Handle mobile lookup
-  if (mobileParam) {
-    const cleaned = cleanNumber(mobileParam)
-    
-    if (!cleaned || !CONFIG.SOURCE_APIS.mobile.regex.test(cleaned)) {
-      return errorResponse(CONFIG.SOURCE_APIS.mobile.error)
-    }
-    
-    const sourceData = await fetchFromSource(CONFIG.SOURCE_APIS.mobile.url + cleaned)
-    
-    if (!sourceData) {
-      return errorResponse("No data found", 404)
-    }
-    
-    // Extract result
-    let result = []
-    if (sourceData.data && sourceData.data.result) {
-      result = sourceData.data.result
-    } else if (sourceData.result) {
-      result = sourceData.result
-    }
-    
-    if (result.length === 0) {
-      return errorResponse("No information available", 404)
-    }
-    
-    return successResponse(result, remaining)
+  if (!result.success) {
+    return errorResponse("No information found for this number", 404)
   }
   
-  // Check for email
-  const emailParam = url.searchParams.get('email')
-  if (emailParam && CONFIG.SOURCE_APIS.email) {
-    if (!CONFIG.SOURCE_APIS.email.regex.test(emailParam)) {
-      return errorResponse(CONFIG.SOURCE_APIS.email.error)
-    }
-    
-    // Here you would fetch from email API
-    return errorResponse("Email lookup coming soon", 501)
-  }
-  
-  // No valid parameters
-  return errorResponse("Missing or invalid search parameter", 400)
+  return successResponse(result.data, rateLimit.remaining)
+}
+
+// Export for ES modules
+export default {
+  fetch: handleRequest
 }
